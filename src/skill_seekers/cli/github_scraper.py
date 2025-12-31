@@ -544,7 +544,8 @@ class GitHubScraper:
             'JavaScript': ['.js', '.jsx'],
             'TypeScript': ['.ts', '.tsx'],
             'C': ['.c', '.h'],
-            'C++': ['.cpp', '.hpp', '.cc', '.hh', '.cxx']
+            'C++': ['.cpp', '.hpp', '.cc', '.hh', '.cxx'],
+            'Go': ['.go']
         }
 
         extensions = extension_map.get(primary_language, [])

@@ -93,6 +93,8 @@ class CodeAnalyzer:
                 return self._analyze_javascript(content, file_path)
             elif language in ['C', 'C++']:
                 return self._analyze_cpp(content, file_path)
+            elif language == 'Go':
+                return self._analyze_go(content, file_path)
             else:
                 logger.debug(f"No analyzer for language: {language}")
                 return {}
@@ -463,6 +465,121 @@ class CodeAnalyzer:
 
         return params
 
+    def _analyze_go(self, content: str, file_path: str) -> Dict[str, Any]:
+        """
+        Analyze Go file using regex patterns.
+        """
+        classes = []
+        functions = []
+        methods_by_struct = {}
+
+        # Extract structs and interfaces
+        type_pattern = r'type\s+(\w+)\s+(struct|interface)\s*\{'
+        for match in re.finditer(type_pattern, content):
+            type_name = match.group(1)
+            type_kind = match.group(2)
+            
+            classes.append({
+                'name': type_name,
+                'base_classes': [type_kind],
+                'methods': [],
+                'docstring': None,
+                'line_number': content[:match.start()].count('\n') + 1
+            })
+            methods_by_struct[type_name] = []
+
+        # Extract functions and methods
+        func_pattern = r'func\s*(?:\(([^)]+)\)\s+)?(\w+)\s*\(([^)]*)\)(?:\s*\(?([^){]*)\)?)?\s*\{'
+        
+        for match in re.finditer(func_pattern, content):
+            receiver = match.group(1)
+            func_name = match.group(2)
+            params_str = match.group(3)
+            return_type = match.group(4)
+
+            params = self._parse_go_parameters(params_str)
+            
+            if return_type:
+                return_type = return_type.strip()
+                if return_type.startswith('(') and return_type.endswith(')'):
+                    return_type = return_type[1:-1]
+
+            sig = {
+                'name': func_name,
+                'parameters': params,
+                'return_type': return_type,
+                'docstring': None,
+                'line_number': content[:match.start()].count('\n') + 1,
+                'is_async': False,
+                'is_method': bool(receiver),
+                'decorators': []
+            }
+
+            if receiver:
+                # Extract struct name from receiver: "s *MyStruct" -> "MyStruct"
+                clean_receiver = receiver.replace('*', '').strip()
+                parts = clean_receiver.split()
+                struct_name = parts[-1] if parts else ""
+                
+                if struct_name in methods_by_struct:
+                    methods_by_struct[struct_name].append(sig)
+                else:
+                    functions.append(sig)
+            else:
+                functions.append(sig)
+
+        # Attach methods to classes
+        for cls in classes:
+            if cls['name'] in methods_by_struct:
+                cls['methods'] = methods_by_struct[cls['name']]
+
+        return {
+            'classes': classes,
+            'functions': functions
+        }
+
+    def _parse_go_parameters(self, params_str: str) -> List[Dict]:
+        """Parse Go parameter string."""
+        params = []
+        if not params_str.strip():
+            return params
+
+        parts = [p.strip() for p in params_str.split(',')]
+        buffer_names = []
+        
+        for part in parts:
+            if not part: continue
+            
+            subparts = part.split()
+            if len(subparts) > 1:
+                type_name = subparts[-1]
+                name = ' '.join(subparts[:-1])
+                
+                params.append({
+                    'name': name,
+                    'type_hint': type_name,
+                    'default': None
+                })
+                
+                for buf_name in buffer_names:
+                    params.append({
+                        'name': buf_name,
+                        'type_hint': type_name,
+                        'default': None
+                    })
+                buffer_names = []
+            else:
+                buffer_names.append(part)
+                
+        for buf_name in buffer_names:
+             params.append({
+                'name': buf_name,
+                'type_hint': None,
+                'default': None
+            })
+            
+        return params
+
 
 if __name__ == '__main__':
     # Test the analyzer
@@ -498,3 +615,38 @@ def create_sprite(texture: str) -> Node2D:
             params = ', '.join([f"{p['name']}: {p['type_hint']}" + (f" = {p['default']}" if p.get('default') else "")
                                for p in method['parameters']])
             print(f"    {method['name']}({params}) -> {method['return_type']}")
+
+    # Test Go analyzer
+    go_code = '''
+package main
+
+type User struct {
+    Name string
+    Age  int
+}
+
+type Greeter interface {
+    Greet(name string) string
+}
+
+func (u *User) SayHello(msg string) string {
+    return "Hello " + msg
+}
+
+func NewUser(name string, age int) *User {
+    return &User{Name: name, Age: age}
+}
+'''
+    print("\n--- Go Analysis ---")
+    go_result = analyzer.analyze_file('main.go', go_code, 'Go')
+    print(f"Classes: {len(go_result.get('classes', []))}")
+    print(f"Functions: {len(go_result.get('functions', []))}")
+    
+    if go_result.get('classes'):
+        for cls in go_result['classes']:
+            print(f"\nClass: {cls['name']} ({cls['base_classes'][0]})")
+            print(f"  Methods: {len(cls['methods'])}")
+            for method in cls['methods']:
+                params = ', '.join([f"{p['name']}: {p['type_hint']}" for p in method['parameters']])
+                print(f"    {method['name']}({params}) -> {method['return_type']}")
+
